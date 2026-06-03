@@ -1,0 +1,50 @@
+# Example nginx server block for the MCP server — HTTP only.
+#
+# Drop into /etc/nginx/sites-available/mcp-yourdomain.conf, symlink into
+# sites-enabled/, then `sudo nginx -t && sudo systemctl reload nginx`.
+#
+# Replace mcp.yourdomain.com with your actual hostname before enabling.
+#
+# This file intentionally has NO TLS. Once it's live on port 80, run:
+#     sudo certbot --nginx -d mcp.yourdomain.com
+# certbot will add the 443 server block, the ssl_certificate lines, and an
+# HTTP->HTTPS redirect automatically, then keep the cert renewed.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name mcp.yourdomain.com;
+
+    # MCP streamable-http endpoint lives at /mcp.
+    location /mcp {
+        proxy_pass http://127.0.0.1:8000;
+
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection        "";   # required for keepalive to upstream
+
+        # Streamable-HTTP responses are chunked / SSE-style. Buffering kills the
+        # stream — turn it off so bytes flow straight through.
+        proxy_buffering         off;
+        proxy_request_buffering off;
+        proxy_cache             off;
+
+        # Allow long-running queries (MCP itself caps at 30s, but the SSE stream
+        # for a single MCP session can stay open longer).
+        proxy_read_timeout      600s;
+        proxy_send_timeout      600s;
+        proxy_connect_timeout   30s;
+
+        # Bearer token in Authorization header; nginx forwards it by default,
+        # but be explicit.
+        proxy_pass_request_headers on;
+    }
+
+    # Everything else 404s — no accidental info leak.
+    location / {
+        return 404;
+    }
+}

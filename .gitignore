@@ -1,0 +1,22 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local configuration & secrets (NEVER commit)
+config.yaml
+.env
+.env.*
+!.env.secrets.example
+
+# Runtime
+logs/
+
+# Image tarballs produced by `docker save` for shipping to the server
+*.tar
