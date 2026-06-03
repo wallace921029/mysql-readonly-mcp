@@ -1,46 +1,55 @@
+> **Language / 语言**: **English** | [中文](README.zh-CN.md)
+
 # mysql-readonly-mcp
 
-一个**只读、远程、多租户**的 MCP (Model Context Protocol) server，用 Streamable HTTP
-transport 暴露给任意 MCP client（Claude Desktop / OpenClaw / ...）。一个进程可以
-托管多个 MySQL 实例下的多个 database，按 Bearer token 区分用户、按
-`source.database` 粒度做权限隔离。
+A **read-only, remote, multi-tenant** MCP (Model Context Protocol) server, exposed over
+the Streamable HTTP transport to any MCP client (Claude Desktop / OpenClaw / ...). A
+single process can host multiple databases across multiple MySQL instances, distinguish
+users by Bearer token, and isolate access at `source.database` granularity.
 
-## 为什么是远程
+## Why remote
 
-stdio 部署把 DB 凭据放在执行 client 的本机 `.env` 里。在那些拥有本机全文件
-访问权限的 agent 平台上，凭据可被旁路读取。改成远程后：
+A stdio deployment puts DB credentials in a local `.env` on the client machine. On agent
+platforms that have full local file access, those credentials can be read out-of-band.
+Going remote instead:
 
-- DB 凭据集中在云端服务器，本地只有一个**作用域受限**的 bearer token。
-- 应用层只读 + 行数上限 + 30s 超时为兜底，token 即使泄漏，爆炸半径也有限。
-- 多人共用同一 endpoint，每人一个 token，可单独撤销。
-- 云端更新无需客户端改配置。
+- Keeps DB credentials centralized on the server; the client holds only a
+  **scope-limited** bearer token.
+- Bounds the blast radius even if a token leaks — application-layer read-only +
+  row-count cap + 30s timeout act as backstops.
+- Lets many people share one endpoint, each with their own token, revocable individually.
+- Means server-side updates require no client config changes.
 
-## 工具
+## Tools
 
-| 工具 | 说明 |
-|------|------|
-| `list_sources` | 列出当前 token 能访问的 `(source, database)` 列表 |
-| `list_tables(source, database)` | 列出库下所有表名 |
-| `describe_table(source, database, table_name)` | 表结构 |
-| `run_query(source, database, sql, row_limit=100)` | 执行只读 SQL，返回结果行 |
+| Tool | Description |
+|------|-------------|
+| `list_sources` | List the `(source, database)` pairs the current token can access |
+| `list_tables(source, database)` | List all table names in a database |
+| `describe_table(source, database, table_name)` | Table schema |
+| `run_query(source, database, sql, row_limit=100)` | Run a read-only SQL query, return result rows |
 
-## 安全限制
+## Security limits
 
-- **只读**：仅放行 `SELECT/SHOW/DESCRIBE/EXPLAIN/WITH` 开头的语句；含写/DDL
-  关键字或多条语句（堆叠查询）的请求被拒。
-- **行数上限**：`run_query` 默认 100 行，最多 1000 行。
-- **超时**：单次查询 30s，并通过 MySQL `MAX_EXECUTION_TIME` 服务端兜底。
-- **审计**：每次 `run_query` 在 `audit.log_path` 落一行 JSON（who / what / rows / ok）。
-- 强烈建议给每个 source 用**只读账号**（仅授 `SELECT`），再加一层 DB 侧防线。
+- **Read-only**: only statements beginning with `SELECT/SHOW/DESCRIBE/EXPLAIN/WITH` are
+  allowed; requests containing write/DDL keywords or multiple statements (stacked
+  queries) are rejected.
+- **Row cap**: `run_query` defaults to 100 rows, capped at 1000.
+- **Timeout**: 30s per query, with MySQL `MAX_EXECUTION_TIME` as a server-side backstop.
+- **Audit**: every `run_query` appends one JSON line to `audit.log_path`
+  (who / what / rows / ok).
+- Strongly recommended: use a **read-only account** (granted `SELECT` only) for each
+  source, adding a second line of defense at the DB layer.
 
-## 配置
+## Configuration
 
-两份文件：
+Two files:
 
-- `config.yaml`：拓扑 + 鉴权规则，**只引用** env 变量名，可安全 review。
-- `.env.secrets`：实际密码 + token 值，**不可入库**。
+- `config.yaml`: topology + auth rules. **Only references** env variable names, so it's
+  safe to review/commit.
+- `.env.secrets`: actual passwords + token values. **Must not be committed.**
 
-参考 `config.example.yaml` / `.env.secrets.example`：
+See `config.example.yaml` / `.env.secrets.example`:
 
 ```yaml
 sources:
@@ -67,186 +76,193 @@ tokens:
     allow: ["*"]
 ```
 
-`allow` 规则三种形式：`source.database`、`source.*`、`*`。
+`allow` rules come in three forms: `source.database`, `source.*`, `*`.
 
-生成 token：
+Generate a token:
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-## 部署
+## Deployment
 
-工作流：**本地构建镜像 → `docker save` 打 tar 包 → scp 到服务器 → `docker load`
-→ 起容器**。项目不上 Docker Hub，每次更新都重复这套流程。
+Workflow: **build the image locally → `docker save` to a tar → scp to the server →
+`docker load` → run the container**. The project is not published to Docker Hub; this
+loop is repeated on every update.
 
-容器直接绑 `0.0.0.0:8000`，部署后服务在 `http://<服务器IP>:8000/mcp` 上。
-想要 HTTPS / 域名，再在前面套一层 nginx + TLS（见末尾「可选：nginx + HTTPS」）。
+The container binds directly to `0.0.0.0:8000`, so after deployment the service is at
+`http://<server-IP>:8000/mcp`. For HTTPS / a domain name, put an nginx + TLS layer in
+front (see "Optional: nginx + HTTPS" at the end).
 
-### 前置
+### Prerequisites
 
-- **本地（Windows + Docker Desktop）**：能跑 `docker build`，能 scp（PowerShell
-  自带 `scp` 或用 WSL）。
-- **服务器（Ubuntu 24.04）**：已装 Docker。
-- **防火墙/安全组**：开放 **8000**（若套了 nginx 则开 **80/443**，8000 可只留内网）。
+- **Local (Windows + Docker Desktop)**: can run `docker build` and `scp` (PowerShell
+  ships with `scp`, or use WSL).
+- **Server (Ubuntu 24.04)**: Docker installed.
+- **Firewall / security group**: open **8000** (or **80/443** if fronted by nginx, in
+  which case 8000 can stay internal-only).
 
 ---
 
-### Phase 1 · 本地构建并打包镜像
+### Phase 1 · Build and package the image locally
 
-在仓库根目录（Windows，PowerShell）：
+In the repo root (Windows, PowerShell):
 
 ```powershell
-# 1) 构建镜像（固定 tag latest，compose 里也写死 latest）
+# 1) Build the image (fixed tag latest; compose hard-codes latest too)
 docker build -t mysql-readonly-mcp:latest .
 
-# 2) 导出成 tar 包
+# 2) Export to a tar
 docker save -o mysql-readonly-mcp.tar mysql-readonly-mcp:latest
 
-# 3) 看一下文件大小（约 150-250 MB，正常）
+# 3) Check the file size (~150-250 MB is normal)
 Get-Item mysql-readonly-mcp.tar | Select-Object Name, Length
 ```
 
-> **跨架构提醒**：本地和服务器都是 x86_64 时跳过此条。本地若是 Apple Silicon
-> (M1/M2/...)，要强制 amd64：
+> **Cross-architecture note**: skip this if both local and server are x86_64. If your
+> local machine is Apple Silicon (M1/M2/...), force amd64:
 > `docker build --platform linux/amd64 -t mysql-readonly-mcp:latest .`
 
 ---
 
-### Phase 2 · 传文件到服务器
+### Phase 2 · Transfer files to the server
 
-首次部署传 tar + compose + 配置模板；后续只更新镜像时只传 tar 包。
+For the first deployment, transfer the tar + compose + config templates; for
+image-only updates afterward, transfer just the tar.
 
-假设服务器上目标路径 `/srv/mcp`，远端用户 `ubuntu`：
+Assuming the target path on the server is `/srv/mcp` and the remote user is `ubuntu`:
 
 ```powershell
-# 服务器先建好目录
-ssh ubuntu@<服务器IP> "sudo mkdir -p /srv/mcp/logs && sudo chown -R ubuntu:ubuntu /srv/mcp"
+# Create the directory on the server first
+ssh ubuntu@<server-IP> "sudo mkdir -p /srv/mcp/logs && sudo chown -R ubuntu:ubuntu /srv/mcp"
 
-# 一次性把镜像 + 部署所需文件 scp 上去
+# scp the image + deployment files up in one go
 scp mysql-readonly-mcp.tar `
     docker-compose.yml `
     config.example.yaml `
     .env.secrets.example `
-    ubuntu@<服务器IP>:/srv/mcp/
+    ubuntu@<server-IP>:/srv/mcp/
 ```
 
 ---
 
-### Phase 3 · 服务器侧加载并启动
+### Phase 3 · Load and start on the server
 
-SSH 上去 `cd /srv/mcp`，然后：
+SSH in, `cd /srv/mcp`, then:
 
 ```bash
-# 1) 把镜像 tar 加载进本机 Docker
+# 1) Load the image tar into the local Docker
 docker load -i mysql-readonly-mcp.tar
-docker images | grep mysql-readonly-mcp        # 确认 mysql-readonly-mcp:latest 在
+docker images | grep mysql-readonly-mcp        # confirm mysql-readonly-mcp:latest is present
 
-# 2) 准备配置文件
-cp config.example.yaml config.yaml             # 编辑 source 拓扑 + token 规则
+# 2) Prepare config files
+cp config.example.yaml config.yaml             # edit source topology + token rules
 nano config.yaml
 
-cp .env.secrets.example .env.secrets           # 填 DB 密码 + 生成每人的 token
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # 跑多次给每人取一个
+cp .env.secrets.example .env.secrets           # fill in DB passwords + generate a token per user
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # run multiple times, one per user
 nano .env.secrets
-chmod 600 .env.secrets                         # 收紧权限
+chmod 600 .env.secrets                         # tighten permissions
 
-# 3) 起容器（不会 build，compose 里没 build: 段，直接用已加载的镜像）
+# 3) Start the container (no build; compose has no build: section, uses the loaded image)
 docker compose up -d
-docker compose ps                              # 应显示 mcp 是 running
+docker compose ps                              # should show mcp as running
 
-# 4) 自检
-curl -i http://127.0.0.1:8000/mcp              # 期望 401 + WWW-Authenticate
+# 4) Self-check
+curl -i http://127.0.0.1:8000/mcp              # expect 401 + WWW-Authenticate
 ```
 
-如果 4) 没返回 401，看日志：`docker compose logs mcp`。
+If step 4 doesn't return 401, check the logs: `docker compose logs mcp`.
 
 ---
 
-### Phase 4 · 端到端验证
+### Phase 4 · End-to-end verification
 
 ```bash
-curl -i http://<服务器IP>:8000/mcp                                       # 401（没带 token）
-curl -i -H "Authorization: Bearer <某个token>" http://<服务器IP>:8000/mcp # 200 / SSE 数据
+curl -i http://<server-IP>:8000/mcp                                       # 401 (no token)
+curl -i -H "Authorization: Bearer <some-token>" http://<server-IP>:8000/mcp # 200 / SSE data
 ```
 
-本机用 MCP Inspector 跑全流程：
+Run the full flow locally with MCP Inspector:
 
 ```powershell
 npx @modelcontextprotocol/inspector
-# URL: http://<服务器IP>:8000/mcp
-# Header: Authorization: Bearer <你的 token>
-# 依次：list_sources → list_tables → run_query "SELECT 1"
+# URL: http://<server-IP>:8000/mcp
+# Header: Authorization: Bearer <your token>
+# In order: list_sources → list_tables → run_query "SELECT 1"
 ```
 
 ---
 
-### 后续运维
+### Ongoing operations
 
-**只更新代码（修了 bug 或加了 feature）**：
+**Code-only update (bug fix or new feature)**:
 ```powershell
-# 本地：改完代码 → 重新打包（tag 永远 latest）
+# Local: after editing code → repackage (tag is always latest)
 docker build -t mysql-readonly-mcp:latest .
 docker save -o mysql-readonly-mcp.tar mysql-readonly-mcp:latest
-scp mysql-readonly-mcp.tar ubuntu@<服务器IP>:/srv/mcp/
+scp mysql-readonly-mcp.tar ubuntu@<server-IP>:/srv/mcp/
 ```
 ```bash
-# 服务器
+# Server
 cd /srv/mcp
 docker load -i mysql-readonly-mcp.tar
-docker compose up -d              # 检测到镜像变了，自动重建容器
-docker image prune -f             # 清理被覆盖的旧 latest（悬空镜像）
+docker compose up -d              # detects the changed image, recreates the container
+docker image prune -f             # clean up the overwritten old latest (dangling image)
 ```
 
-**只改配置（加/删/改用户 / 改库）**：
+**Config-only change (add/remove/edit users or databases)**:
 ```bash
-# 服务器
-nano /srv/mcp/config.yaml          # 和/或 .env.secrets
+# Server
+nano /srv/mcp/config.yaml          # and/or .env.secrets
 docker compose -f /srv/mcp/docker-compose.yml restart mcp
 ```
 
-**看审计 / 排查**：
+**Audit / troubleshooting**:
 ```bash
-tail -f /srv/mcp/logs/audit.log                          # 每次 run_query 一行 JSON
-docker compose -f /srv/mcp/docker-compose.yml logs -f mcp # 运行日志
+tail -f /srv/mcp/logs/audit.log                          # one JSON line per run_query
+docker compose -f /srv/mcp/docker-compose.yml logs -f mcp # runtime logs
 ```
 
 ---
 
-### 可选：nginx + HTTPS
+### Optional: nginx + HTTPS
 
-要域名 + HTTPS 时，在宿主机用 nginx 反代到 `127.0.0.1:8000`（仓库自带
-`nginx-mcp.conf.example`，已针对 streamable-http 调好缓冲/超时）：
+For a domain + HTTPS, use nginx on the host to reverse-proxy to `127.0.0.1:8000` (the
+repo ships `nginx-mcp.conf.example`, with buffering/timeouts already tuned for
+streamable-http):
 
 ```bash
-# DNS：mcp.yourdomain.com 的 A 记录指向服务器公网 IP
+# DNS: point an A record for mcp.yourdomain.com at the server's public IP
 sudo cp nginx-mcp.conf.example /etc/nginx/sites-available/mcp.conf
-sudo sed -i 's/mcp.yourdomain.com/<你的真实域名>/g' /etc/nginx/sites-available/mcp.conf
+sudo sed -i 's/mcp.yourdomain.com/<your-real-domain>/g' /etc/nginx/sites-available/mcp.conf
 sudo ln -s /etc/nginx/sites-available/mcp.conf /etc/nginx/sites-enabled/
-sudo certbot --nginx -d <你的真实域名>        # 自动签证书并改写 ssl_* 行，之后自动续签
+sudo certbot --nginx -d <your-real-domain>     # auto-issues the cert, rewrites ssl_* lines, auto-renews
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-之后客户端 URL 用 `https://<你的真实域名>/mcp`。
+After that, clients use the URL `https://<your-real-domain>/mcp`.
 
-> 套了 nginx 后，若不想让 8000 端口也对公网暴露，可把 `docker-compose.yml`
-> 的 `ports` 改成 `"127.0.0.1:8000:8000"`，只留 nginx 这条入口。
+> Once nginx is in front, if you don't want port 8000 exposed to the public, change the
+> `ports` in `docker-compose.yml` to `"127.0.0.1:8000:8000"`, leaving nginx as the only
+> entry point.
 >
-> nginx 模板里的关键点：`proxy_buffering off` / `proxy_request_buffering off`
-> （streamable-http 是流式响应，缓冲会卡住）、`proxy_read_timeout 600s`
-> （SSE 连接挂得久）、`proxy_http_version 1.1` + `Connection ""`（保活复用）。
+> Key points in the nginx template: `proxy_buffering off` / `proxy_request_buffering off`
+> (streamable-http is a streaming response; buffering stalls it), `proxy_read_timeout 600s`
+> (SSE connections stay open a long time), `proxy_http_version 1.1` + `Connection ""`
+> (keep-alive reuse).
 
-## 客户端配置（OpenClaw）
+## Client configuration (OpenClaw)
 
 ```json
 {
   "mcp": {
     "servers": {
       "mysql-readonly": {
-        "url": "http://<服务器IP>:8000/mcp",
+        "url": "http://<server-IP>:8000/mcp",
         "transport": "streamable-http",
         "headers": {
-          "Authorization": "Bearer <你的 token>"
+          "Authorization": "Bearer <your token>"
         }
       }
     }
@@ -254,30 +270,32 @@ sudo nginx -t && sudo systemctl reload nginx
 }
 ```
 
-套了 nginx + HTTPS 后，把 `url` 换成 `https://<你的真实域名>/mcp`，其余相同。
+After nginx + HTTPS, swap `url` for `https://<your-real-domain>/mcp`; everything else
+stays the same.
 
-> `transport: "streamable-http"` 必须显式声明——不写时 OpenClaw 默认走 SSE。
+> `transport: "streamable-http"` must be declared explicitly — without it, OpenClaw
+> defaults to SSE.
 
-## 项目结构
+## Project structure
 
 ```
 .
-├── main.py                       # entrypoint：load config → build app → uvicorn.run
+├── main.py                       # entrypoint: load config → build app → uvicorn.run
 ├── src/
-│   ├── config.py                 # YAML + env 解析与校验
-│   ├── validator.py              # 只读 SQL 校验
-│   ├── db.py                     # pymysql 连接 & 执行
+│   ├── config.py                 # YAML + env parsing and validation
+│   ├── validator.py              # read-only SQL validation
+│   ├── db.py                     # pymysql connection & execution
 │   ├── auth.py                   # Bearer token ASGI middleware
-│   ├── audit.py                  # JSON-line 审计日志
-│   └── server.py                 # FastMCP 工具 + ASGI 组装
+│   ├── audit.py                  # JSON-line audit log
+│   └── server.py                 # FastMCP tools + ASGI assembly
 ├── config.example.yaml
 ├── .env.secrets.example
 ├── Dockerfile
-├── docker-compose.yml             # MCP 容器，绑 0.0.0.0:8000
-└── nginx-mcp.conf.example         # 可选：宿主机 nginx server block 示例（HTTPS/域名）
+├── docker-compose.yml             # MCP container, binds 0.0.0.0:8000
+└── nginx-mcp.conf.example         # optional: host nginx server block example (HTTPS/domain)
 ```
 
-## 本地开发（不用 Docker）
+## Local development (no Docker)
 
 ```bash
 uv sync
