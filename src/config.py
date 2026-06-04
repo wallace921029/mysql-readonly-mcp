@@ -73,6 +73,8 @@ class ServerConfig:
     # Optional deployment-specific text appended after the built-in tool
     # instructions; describe business context, not tool behavior.
     instructions: str | None = None
+    default_row_limit: int = 100
+    max_row_limit: int = 1000
 
 
 @dataclass(frozen=True)
