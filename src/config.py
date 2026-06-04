@@ -176,6 +176,8 @@ def load_config(path: str | Path) -> AppConfig:
         port=int(server_raw.get("port", 8000)),
         name=name,
         instructions=instructions or None,
+        default_row_limit=int(server_raw.get("default_row_limit", 100)),
+        max_row_limit=int(server_raw.get("max_row_limit", 1000)),
     )
 
     sources_raw = raw.get("sources") or {}

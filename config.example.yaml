@@ -9,6 +9,10 @@ server:
   # Optional. MCP server name shown to clients; defaults to "mysql-readonly".
   # Useful to distinguish multiple instances (e.g. prod vs staging).
   name: mysql-readonly
+  # Optional. Default number of rows to return in a query if not specified. Defaults to 100. Set to 0 for no limit.
+  default_row_limit: 100
+  # Optional. Absolute maximum number of rows a single query can return. Defaults to 1000. Set to 0 for no limit.
+  max_row_limit: 1000
   # Optional. Extra business context appended AFTER the built-in tool
   # instructions. Describe your data/policies here, not tool behavior
   # (read-only rules, row caps, etc. are baked into the code).

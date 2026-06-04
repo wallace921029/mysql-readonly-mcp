@@ -16,22 +16,21 @@ from .auth import BearerAuthMiddleware, require_identity
 from .config import AppConfig
 from .validator import validate_read_only
 
-DEFAULT_ROW_LIMIT = 100
-MAX_ROW_LIMIT = 1000
-
 # Core, behavior-describing instructions. These track the actual tool
 # implementation (read-only gate, row cap) and must stay in sync with the code,
 # so they live here rather than in config. A deployment may append extra
 # business context via server.instructions in config.yaml.
-CORE_INSTRUCTIONS = (
-    "Read-only access to one or more MySQL databases. "
-    "Call list_sources first to see which (source, database) pairs your "
-    "token can access; pass those names to the other tools. "
-    "list_tables and describe_table inspect schema; run_query executes a "
-    "single read-only statement (SELECT/SHOW/DESCRIBE/EXPLAIN/WITH only — "
-    "writes, DDL, and stacked queries are rejected). Results are capped at "
-    "1000 rows. Never assume a source/database exists without listing it first."
-)
+def get_core_instructions(max_row_limit: int) -> str:
+    cap_text = f"{max_row_limit} rows" if max_row_limit > 0 else "unlimited rows"
+    return (
+        "Read-only access to one or more MySQL databases. "
+        "Call list_sources first to see which (source, database) pairs your "
+        "token can access; pass those names to the other tools. "
+        "list_tables and describe_table inspect schema; run_query executes a "
+        "single read-only statement (SELECT/SHOW/DESCRIBE/EXPLAIN/WITH only — "
+        "writes, DDL, and stacked queries are rejected). Results are capped at "
+        f"{cap_text}. Never assume a source/database exists without listing it first."
+    )
 
 _IDENT = re.compile(r"[A-Za-z0-9_-]+")
 _TABLE_IDENT = re.compile(r"[A-Za-z0-9_]+")
@@ -63,7 +62,7 @@ def _resolve(config: AppConfig, source: str, database: str):
 
 
 def build_app(config: AppConfig) -> ASGIApp:
-    instructions = CORE_INSTRUCTIONS
+    instructions = get_core_instructions(config.server.max_row_limit)
     if config.server.instructions:
         instructions = f"{instructions}\n\n{config.server.instructions}"
     mcp = FastMCP(
@@ -126,17 +125,23 @@ def build_app(config: AppConfig) -> ASGIApp:
             ),
         ],
         row_limit: Annotated[
-            int,
+            int | None,
             Field(
-                ge=1,
-                le=MAX_ROW_LIMIT,
-                description="Maximum rows returned (1-1000); excess is truncated.",
+                ge=0,
+                description="Maximum rows returned. If omitted, uses the server's default row limit. Set to 0 for unlimited. Capped by server's max row limit.",
             ),
-        ] = DEFAULT_ROW_LIMIT,
+        ] = None,
     ) -> dict[str, Any]:
         """Execute a read-only SQL query and return rows."""
         identity, src = _resolve(config, source, database)
-        row_limit = max(1, min(row_limit, MAX_ROW_LIMIT))
+        
+        limit = row_limit if row_limit is not None else config.server.default_row_limit
+        if config.server.max_row_limit > 0:
+            if limit <= 0:
+                limit = config.server.max_row_limit
+            else:
+                limit = min(limit, config.server.max_row_limit)
+        
         try:
             cleaned = validate_read_only(sql)
             rows = db.execute(src, database, cleaned)
@@ -150,11 +155,18 @@ def build_app(config: AppConfig) -> ASGIApp:
                 error=f"{type(exc).__name__}: {exc}",
             )
             raise
-        truncated = len(rows) > row_limit
+            
+        if limit > 0:
+            truncated = len(rows) > limit
+            returned_rows = rows[:limit]
+        else:
+            truncated = False
+            returned_rows = rows
+            
         result = {
-            "row_count": min(len(rows), row_limit),
+            "row_count": len(returned_rows),
             "truncated": truncated,
-            "rows": rows[:row_limit],
+            "rows": returned_rows,
         }
         audit.record(
             identity=identity.label,
