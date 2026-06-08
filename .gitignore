@@ -20,3 +20,5 @@ logs/
 
 # Image tarballs produced by `docker save` for shipping to the server
 *.tar
+
+docker-images/
