@@ -75,6 +75,11 @@ class ServerConfig:
     instructions: str | None = None
     default_row_limit: int = 100
     max_row_limit: int = 1000
+    # uvicorn event loop implementation. Defaults to "asyncio" because uvloop's
+    # bundled libuv uses syscalls (io_uring/clone3) that older host Docker
+    # seccomp profiles block, segfaulting on startup. Set to "uvloop" only on
+    # hosts with a recent Docker, or "auto" to let uvicorn decide.
+    loop: str = "asyncio"
 
 
 @dataclass(frozen=True)
@@ -173,6 +178,11 @@ def load_config(path: str | Path) -> AppConfig:
         raise ValueError("server.name must not be empty.")
     instructions = server_raw.get("instructions")
     instructions = str(instructions).strip() if instructions else None
+    loop = str(server_raw.get("loop", "asyncio")).strip()
+    if loop not in {"auto", "asyncio", "uvloop"}:
+        raise ValueError(
+            f"server.loop must be 'auto', 'asyncio', or 'uvloop' (got {loop!r})."
+        )
     server = ServerConfig(
         host=str(server_raw.get("host", "0.0.0.0")),
         port=int(server_raw.get("port", 8000)),
@@ -180,6 +190,7 @@ def load_config(path: str | Path) -> AppConfig:
         instructions=instructions or None,
         default_row_limit=int(server_raw.get("default_row_limit", 100)),
         max_row_limit=int(server_raw.get("max_row_limit", 1000)),
+        loop=loop,
     )
 
     sources_raw = raw.get("sources") or {}

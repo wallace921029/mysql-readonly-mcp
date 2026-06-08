@@ -14,7 +14,13 @@ def main() -> None:
     config_path = os.environ.get("CONFIG_PATH", "config.yaml")
     config = load_config(config_path)
     app = build_app(config)
-    uvicorn.run(app, host=config.server.host, port=config.server.port, log_level="info")
+    uvicorn.run(
+        app,
+        host=config.server.host,
+        port=config.server.port,
+        log_level="info",
+        loop=config.server.loop,
+    )
 
 
 if __name__ == "__main__":

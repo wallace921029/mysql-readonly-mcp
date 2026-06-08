@@ -13,6 +13,11 @@ server:
   default_row_limit: 100
   # Optional. Absolute maximum number of rows a single query can return. Defaults to 1000. Set to 0 for no limit.
   max_row_limit: 1000
+  # Optional. uvicorn event loop: "asyncio" (default), "uvloop", or "auto".
+  # Keep "asyncio" on hosts with an older Docker — uvloop's libuv uses syscalls
+  # (io_uring/clone3) that stale Docker seccomp profiles block, segfaulting on
+  # startup. Use "uvloop" only where the host Docker is recent (24+).
+  loop: asyncio
   # Optional. Extra business context appended AFTER the built-in tool
   # instructions. Describe your data/policies here, not tool behavior
   # (read-only rules, row caps, etc. are baked into the code).
